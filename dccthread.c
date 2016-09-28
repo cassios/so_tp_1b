@@ -11,6 +11,8 @@
 typedef struct dccthread {
     char name[DCCTHREAD_MAX_NAME_SIZE];
     ucontext_t *context;
+    unsigned int yielded; //0 if not 1 otherwise
+    dccthread_t *waiting_for; //pointer to a thread that it is waiting to finish, NULL otherwise
 } dccthread_t;
 
 typedef struct waitingThread {
@@ -20,7 +22,6 @@ typedef struct waitingThread {
 
 ucontext_t manager;
 struct dlist *doneQueue;
-struct dlist *waitingQueue;
 
 
 /* `dccthread_init` initializes any state necessary for the
@@ -41,17 +42,30 @@ void dccthread_init(void (*func)(int), int param) {
     
     
     doneQueue = dlist_create();
-    waitingQueue = dlist_create();
 
     dccthread_t *newThread = malloc(sizeof(dccthread_t));
     strcpy(newThread->name, "main");
     newThread->context = main;
+    newThread->yielded = 0;
+    newThread->waiting_for = NULL;
     dlist_push_right(doneQueue, newThread);    
 
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
+        
+        if(next_thread->waiting_for != NULL) {
+            dlist_push_right(doneQueue, next_thread); 
+            continue;
+        }
+
         swapcontext(&manager, next_thread->context);
+        
         dlist_pop_left(doneQueue);
+        
+        if(next_thread->yielded || next_thread->waiting_for != NULL) {
+            next_thread->yielded = 0;
+            dlist_push_right(doneQueue, next_thread);
+        }
     }
     exit(0);
 }
@@ -78,6 +92,8 @@ dccthread_t * dccthread_create(const char *name,
     dccthread_t *newThread = malloc(sizeof(dccthread_t));
     strcpy(newThread->name, name);
     newThread->context = newContext;
+    newThread->yielded = 0;
+    newThread->waiting_for = NULL;
     dlist_push_right(doneQueue, newThread);    
 
     return newThread;    
@@ -86,8 +102,8 @@ dccthread_t * dccthread_create(const char *name,
 /* `dccthread_yield` will yield the CPU (from the current thread to
  * another). */
 void dccthread_yield(void) {
-    dccthread_t *currThread = dlist_get_index(doneQueue, 0);
-    dlist_push_right(doneQueue, currThread);
+    dccthread_t *currThread = dccthread_self();
+    currThread->yielded = 1;
     swapcontext(currThread->context, &manager);
 }
 
@@ -99,11 +115,10 @@ void dccthread_exit(void) {
     int index;
     
     //checks if there is any thread waiting for it to finish
-    for(index=0; index<waitingQueue->count; index++) {
-        waitingThread_t *wt = dlist_get_index(waitingQueue, index);
-        if(wt->w_for == currThread) {
-            //needs to remove the item from the waiting list
-            dlist_push_right(doneQueue, wt->w_by);
+    for(index=0; index<doneQueue->count; index++) {
+        dccthread_t *thread = dlist_get_index(doneQueue, index);
+        if(thread->waiting_for == currThread) {
+            thread->waiting_for = NULL;
         }
     }
     free(currThread->context->uc_stack.ss_sp);
@@ -121,15 +136,9 @@ void dccthread_wait(dccthread_t *tid) {
     //otherwise the target thread has already finised
     if(index != doneQueue->count) {
         dccthread_t *currThread = dccthread_self();
-
-        waitingThread_t *wt = malloc(sizeof(waitingThread_t));
-        wt->w_by = currThread;
-        wt->w_for = tid;
-        dlist_push_right(waitingQueue, wt);
-        
+        currThread->waiting_for = tid;
         swapcontext(currThread->context, &manager);
     }
-
 }
 
 /* `dccthread_sleep` stops the current thread for the time period
