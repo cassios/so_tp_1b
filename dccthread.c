@@ -8,6 +8,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Preemption
+#include <signal.h>
+#include <time.h>
+
+// #include <unistd.h>
+
+/* Preemption timer */
+timer_t timer;
+const struct itimerspec ts = {
+  {0, 0},
+  {0, 100000000},
+};
+
+
 typedef struct dccthread {
     char name[DCCTHREAD_MAX_NAME_SIZE];
     ucontext_t *context;
@@ -29,7 +43,11 @@ struct dlist *doneQueue;
  * never returns. */
 void dccthread_init(void (*func)(int), int param) {
     ucontext_t *main = malloc(sizeof(ucontext_t));
-    
+
+    sigemptyset(&act.sa_mask);
+    sigaction(TIMERSIG, &act, NULL);
+    timer_create(CLOCK_PROCESS_CPUTIME_ID, &sigev, &timer);
+
     //get the current context
     getcontext(main);
 
@@ -37,10 +55,10 @@ void dccthread_init(void (*func)(int), int param) {
     main->uc_link = &manager;
     main->uc_stack.ss_sp = malloc( THREAD_STACK_SIZE );
     main->uc_stack.ss_size = THREAD_STACK_SIZE;
-    main->uc_stack.ss_flags = 0;        
+    main->uc_stack.ss_flags = 0;
     makecontext(main, (void (*)(void))func, 1, param);
-    
-    
+
+
     doneQueue = dlist_create();
 
     dccthread_t *newThread = malloc(sizeof(dccthread_t));
@@ -48,20 +66,20 @@ void dccthread_init(void (*func)(int), int param) {
     newThread->context = main;
     newThread->yielded = 0;
     newThread->waiting_for = NULL;
-    dlist_push_right(doneQueue, newThread);    
+    dlist_push_right(doneQueue, newThread);
 
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
-        
+
         if(next_thread->waiting_for != NULL) {
-            dlist_push_right(doneQueue, next_thread); 
+            dlist_push_right(doneQueue, next_thread);
             continue;
         }
 
         swapcontext(&manager, next_thread->context);
-        
+
         dlist_pop_left(doneQueue);
-        
+
         if(next_thread->yielded || next_thread->waiting_for != NULL) {
             next_thread->yielded = 0;
             dlist_push_right(doneQueue, next_thread);
@@ -74,29 +92,33 @@ void dccthread_init(void (*func)(int), int param) {
  * handle.  returns `NULL` on failure.  the new thread will execute
  * function `func` with parameter `param`.  `name` will be used to
  * identify the new thread. */
-dccthread_t * dccthread_create(const char *name,
-		void (*func)(int ), int param) {
+dccthread_t * dccthread_create(
+                          const char *name,
+                          void (*func)(int ), int param) {
+
     ucontext_t *newContext = malloc(sizeof(ucontext_t));
 
     getcontext(newContext);
     newContext->uc_link = &manager;
     newContext->uc_stack.ss_sp = malloc( THREAD_STACK_SIZE );
     newContext->uc_stack.ss_size = THREAD_STACK_SIZE;
-    newContext->uc_stack.ss_flags = 0;        
+    newContext->uc_stack.ss_flags = 0;
+
     if (newContext->uc_stack.ss_sp == 0) {
         perror( "malloc: Could not allocate stack" );
         return NULL;
     }
+
     makecontext(newContext, (void (*)(void))func, 1, param);
-    
+
     dccthread_t *newThread = malloc(sizeof(dccthread_t));
     strcpy(newThread->name, name);
     newThread->context = newContext;
     newThread->yielded = 0;
     newThread->waiting_for = NULL;
-    dlist_push_right(doneQueue, newThread);    
+    dlist_push_right(doneQueue, newThread);
 
-    return newThread;    
+    return newThread;
 }
 
 /* `dccthread_yield` will yield the CPU (from the current thread to
@@ -113,7 +135,7 @@ void dccthread_yield(void) {
 void dccthread_exit(void) {
     dccthread_t *currThread = dccthread_self();
     int index;
-    
+
     //checks if there is any thread waiting for it to finish
     for(index=0; index<doneQueue->count; index++) {
         dccthread_t *thread = dlist_get_index(doneQueue, index);
@@ -132,7 +154,7 @@ void dccthread_wait(dccthread_t *tid) {
         dccthread_t *thread = dlist_get_index(doneQueue, index);
         if(thread == tid) break;
     }
-    
+
     //otherwise the target thread has already finised
     if(index != doneQueue->count) {
         dccthread_t *currThread = dccthread_self();
@@ -144,6 +166,7 @@ void dccthread_wait(dccthread_t *tid) {
 /* `dccthread_sleep` stops the current thread for the time period
  * specified in `ts`. */
 void dccthread_sleep(struct timespec ts) {
+
 }
 
 /* `dccthread_self` returns the current thread's handle. */
@@ -157,7 +180,5 @@ dccthread_t * dccthread_self(void) {
  * name of thread `tid`.  the returned string is owned and managed
  * by the library. */
 const char * dccthread_name(dccthread_t *tid) {
-    return tid->name; 
+    return tid->name;
 }
-
-
