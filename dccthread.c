@@ -8,19 +8,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Preemption
+// for Preemption
 #include <signal.h>
-#include <time.h>
+#include <sys/time.h>
 
-// #include <unistd.h>
-
-/* Preemption timer */
-timer_t timer;
-const struct itimerspec ts = {
-  {0, 0},
-  {0, 100000000},
-};
-
+/*
+ * Usado pra DEBUG
+ */
+// #define DEBUG
 
 typedef struct dccthread {
     char name[DCCTHREAD_MAX_NAME_SIZE];
@@ -44,9 +39,14 @@ struct dlist *doneQueue;
 void dccthread_init(void (*func)(int), int param) {
     ucontext_t *main = malloc(sizeof(ucontext_t));
 
+    /*************************/
+    // Timer
+    struct itimerval it;
+    struct sigaction act, oact;
+    act.sa_handler = dccthread_yield;
     sigemptyset(&act.sa_mask);
-    sigaction(TIMERSIG, &act, NULL);
-    timer_create(CLOCK_PROCESS_CPUTIME_ID, &sigev, &timer);
+    act.sa_flags = 0;
+    /*************************/
 
     //get the current context
     getcontext(main);
@@ -67,6 +67,16 @@ void dccthread_init(void (*func)(int), int param) {
     newThread->yielded = 0;
     newThread->waiting_for = NULL;
     dlist_push_right(doneQueue, newThread);
+
+    /****************************/
+    // Setando temporizador de sinal
+    sigaction(SIGPROF, &act, &oact);
+    // Start itimer
+    it.it_interval.tv_sec = it.it_value.tv_sec = 0; // x seconds plus below
+    it.it_interval.tv_usec = it.it_value.tv_usec = 1; // x*10-6 seconds
+    // it.it_interval.tv_usec = it.it_value.tv_usec = 0;
+    setitimer(ITIMER_PROF, &it, NULL);
+    /********************************/
 
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
@@ -124,6 +134,11 @@ dccthread_t * dccthread_create(
 /* `dccthread_yield` will yield the CPU (from the current thread to
  * another). */
 void dccthread_yield(void) {
+
+#ifdef DEBUG
+    printf("Trocando contexto da funcao: %s\n", dccthread_name(dccthread_self()));
+#endif
+
     dccthread_t *currThread = dccthread_self();
     currThread->yielded = 1;
     swapcontext(currThread->context, &manager);
