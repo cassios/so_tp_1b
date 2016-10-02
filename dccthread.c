@@ -10,7 +10,9 @@
 
 // for Preemption
 #include <signal.h>
-#include <sys/time.h>
+#include <time.h>
+// #include <sys/time.h>
+
 
 /*
  * Usado pra DEBUG
@@ -32,21 +34,42 @@ typedef struct waitingThread {
 ucontext_t manager;
 struct dlist *doneQueue;
 
+// TIMER
+struct sigevent tEvent;
+struct sigaction tAction;
+struct itimerspec tInterval;
+sigset_t mask;
+timer_t timerid;
+
+/*
+struct timespec {
+   time_t tv_sec;                // Seconds
+   long   tv_nsec;               // Nanoseconds
+};
+
+struct itimerspec {
+   struct timespec it_interval;  // Timer interval
+   struct timespec it_value;     // Initial expiration
+};
+
+timer_settime() arms or disarms the timer identified by timerid.
+The new_value argument is pointer to an itimerspec structure that
+specifies the new initial value and the new interval for the timer.
+The itimerspec structure is defined as follows:
+
+int timer_settime(timer_t timerid, int flags,
+                         const struct itimerspec *new_value,
+                         struct itimerspec * old_value);
+int timer_gettime(timer_t timerid, struct itimerspec *curr_value);
+*/
+
+
 
 /* `dccthread_init` initializes any state necessary for the
  * threadling library and starts running `func`.  this function
  * never returns. */
 void dccthread_init(void (*func)(int), int param) {
     ucontext_t *main = malloc(sizeof(ucontext_t));
-
-    /*************************/
-    // Timer
-    struct itimerval it;
-    struct sigaction act, oact;
-    act.sa_handler = dccthread_yield;
-    sigemptyset(&act.sa_mask);
-    act.sa_flags = 0;
-    /*************************/
 
     //get the current context
     getcontext(main);
@@ -70,13 +93,20 @@ void dccthread_init(void (*func)(int), int param) {
 
     /****************************/
     // Setando temporizador de sinal
-    sigaction(SIGPROF, &act, &oact);
-    // Start itimer
-    it.it_interval.tv_sec = it.it_value.tv_sec = 0; // x seconds plus below
-    it.it_interval.tv_usec = it.it_value.tv_usec = 1; // x*10-6 seconds
-    // it.it_interval.tv_usec = it.it_value.tv_usec = 0;
-    setitimer(ITIMER_PROF, &it, NULL);
-    /********************************/
+    tEvent.sigev_signo = SIGALRM;
+    tEvent.sigev_notify = SIGEV_SIGNAL;
+    tAction.sa_handler = (void*)dccthread_yield;
+    tAction.sa_flags = 0;       // Do nothing
+
+    tInterval.it_value.tv_sec = tInterval.it_interval.tv_sec = 0;
+    tInterval.it_value.tv_nsec = tInterval.it_interval.tv_nsec = 1000000;
+
+    sigaction(SIGALRM, &tAction, 0);
+    timer_create(CLOCK_PROCESS_CPUTIME_ID, &tEvent, &timerid);
+    timer_settime(&timerid, 0, &tInterval, NULL);
+    sigset_t signal_set;
+    sigaddset(&signal_set, SIGALRM);
+    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
 
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
@@ -136,7 +166,7 @@ dccthread_t * dccthread_create(
 void dccthread_yield(void) {
 
 #ifdef DEBUG
-    printf("Trocando contexto da funcao: %s\n", dccthread_name(dccthread_self()));
+    printf("dccthread_yield: %s\n", dccthread_name(dccthread_self()));
 #endif
 
     dccthread_t *currThread = dccthread_self();

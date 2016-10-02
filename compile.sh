@@ -1,6 +1,7 @@
 #!/bin/bash
 
-gcc -c *.c
+gcc -g -Wall -c dlist.c
+gcc -g -Wall -c dccthread.c
 
 # for i in `seq 1 12`;
 # do
@@ -13,7 +14,7 @@ gcc -c *.c
 #   echo \***************************
 # done
 
-gcc -g -Wall -I. main.c dccthread.o dlist.o -o test
+gcc -g -Wall -I. main.c dccthread.o dlist.o -o test_yuri -lrt
 echo Running
-./test
-rm -f test
+./test_yuri
+rm -f test_yuri *.o
