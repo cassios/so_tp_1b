@@ -22,7 +22,8 @@ dccthread_t * dccthread_create(const char *name,
 
 /* `dccthread_yield` will yield the CPU (from the current thread to
  * another). */
-void dccthread_yield(void);
+void dccthread_yield(int);
+void teste_yield(int);
 
 /* `dccthread_exit` terminates the current thread, freeing all
  * associated resources. */
