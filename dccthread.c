@@ -69,6 +69,7 @@ int timer_gettime(timer_t timerid, struct itimerspec *curr_value);
  * threadling library and starts running `func`.  this function
  * never returns. */
 void dccthread_init(void (*func)(int), int param) {
+
     ucontext_t *main = malloc(sizeof(ucontext_t));
 
     //get the current context
@@ -99,15 +100,16 @@ void dccthread_init(void (*func)(int), int param) {
     tAction.sa_flags = 0;       // Do nothing
 
     tInterval.it_value.tv_sec = tInterval.it_interval.tv_sec = 0;
-    tInterval.it_value.tv_nsec = tInterval.it_interval.tv_nsec = 1000000;
+    tInterval.it_value.tv_nsec = tInterval.it_interval.tv_nsec = 10000000; // 10 ms
 
-    sigaction(SIGALRM, &tAction, 0);
+    sigaction(SIGALRM, &tAction, NULL);
     timer_create(CLOCK_PROCESS_CPUTIME_ID, &tEvent, &timerid);
     timer_settime(&timerid, 0, &tInterval, NULL);
-    sigset_t signal_set;
-    sigaddset(&signal_set, SIGALRM);
-    sigprocmask(SIG_UNBLOCK, &signal_set, NULL);
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGALRM);
 
+    /****************************/
+    sigprocmask(SIG_BLOCK, &mask, NULL);
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
 
@@ -139,6 +141,7 @@ dccthread_t * dccthread_create(
     ucontext_t *newContext = malloc(sizeof(ucontext_t));
 
     getcontext(newContext);
+    sigprocmask(SIG_BLOCK, &mask, NULL);
     newContext->uc_link = &manager;
     newContext->uc_stack.ss_sp = malloc( THREAD_STACK_SIZE );
     newContext->uc_stack.ss_size = THREAD_STACK_SIZE;
@@ -158,44 +161,50 @@ dccthread_t * dccthread_create(
     newThread->waiting_for = NULL;
     dlist_push_right(doneQueue, newThread);
 
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
     return newThread;
 }
 
 /* `dccthread_yield` will yield the CPU (from the current thread to
  * another). */
-void dccthread_yield(void) {
-
-#ifdef DEBUG
-    printf("dccthread_yield: %s\n", dccthread_name(dccthread_self()));
-#endif
+void dccthread_yield() {
+    sigprocmask(SIG_BLOCK, &mask, NULL);
 
     dccthread_t *currThread = dccthread_self();
+    // printf("%s %d\n", currThread->name, currThread);
+
     currThread->yielded = 1;
     swapcontext(currThread->context, &manager);
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 
 /* `dccthread_exit` terminates the current thread, freeing all
  * associated resources. */
 void dccthread_exit(void) {
+
+    sigprocmask(SIG_BLOCK, &mask, NULL);
+
     dccthread_t *currThread = dccthread_self();
     int index;
 
     //checks if there is any thread waiting for it to finish
-    for(index=0; index<doneQueue->count; index++) {
+    for(index = 0; index < doneQueue->count; index++) {
         dccthread_t *thread = dlist_get_index(doneQueue, index);
         if(thread->waiting_for == currThread) {
             thread->waiting_for = NULL;
         }
     }
     free(currThread->context->uc_stack.ss_sp);
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 /* `dccthread_wait` blocks the current thread until thread `tid`
  * terminates. */
 void dccthread_wait(dccthread_t *tid) {
+
     int index;
-    for(index=0; index<doneQueue->count; index++) {
+    for(index = 0; index < doneQueue->count; index++) {
         dccthread_t *thread = dlist_get_index(doneQueue, index);
         if(thread == tid) break;
     }
