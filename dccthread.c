@@ -11,90 +11,34 @@
 // for Preemption
 #include <signal.h>
 #include <time.h>
-// #include <sys/time.h>
-
-
-/*
- * Usado pra DEBUG
- */
-// #define DEBUG
 
 typedef struct dccthread {
     char name[DCCTHREAD_MAX_NAME_SIZE];
     ucontext_t *context;
-    unsigned int yielded; //0 if not 1 otherwise
+    unsigned int yielded; //0 if not, 1 otherwise
+    unsigned int sleeping; //0 if not, 1 otherwise
     dccthread_t *waiting_for; //pointer to a thread that it is waiting to finish, NULL otherwise
 } dccthread_t;
 
-typedef struct waitingThread {
-    dccthread_t *w_by;
-    dccthread_t *w_for;
-} waitingThread_t;
-
-ucontext_t manager;
 struct dlist *doneQueue;
-
-// TIMER
-struct sigevent tEvent;
-struct sigaction tAction;
-struct itimerspec tInterval;
+ucontext_t manager;
 sigset_t mask;
-timer_t timerid;
-
-/*
-struct timespec {
-   time_t tv_sec;                // Seconds
-   long   tv_nsec;               // Nanoseconds
-};
-
-struct itimerspec {
-   struct timespec it_interval;  // Timer interval
-   struct timespec it_value;     // Initial expiration
-};
-
-timer_settime() arms or disarms the timer identified by timerid.
-The new_value argument is pointer to an itimerspec structure that
-specifies the new initial value and the new interval for the timer.
-The itimerspec structure is defined as follows:
-
-int timer_settime(timer_t timerid, int flags,
-                         const struct itimerspec *new_value,
-                         struct itimerspec * old_value);
-int timer_gettime(timer_t timerid, struct itimerspec *curr_value);
-*/
-
-
 
 /* `dccthread_init` initializes any state necessary for the
  * threadling library and starts running `func`.  this function
  * never returns. */
 void dccthread_init(void (*func)(int), int param) {
-
-    ucontext_t *main = malloc(sizeof(ucontext_t));
-
-    //get the current context
-    getcontext(main);
-
-    //modify the current context
-    main->uc_link = &manager;
-    main->uc_stack.ss_sp = malloc( THREAD_STACK_SIZE );
-    main->uc_stack.ss_size = THREAD_STACK_SIZE;
-    main->uc_stack.ss_flags = 0;
-    makecontext(main, (void (*)(void))func, 1, param);
-
-
     doneQueue = dlist_create();
 
-    dccthread_t *newThread = malloc(sizeof(dccthread_t));
-    strcpy(newThread->name, "main");
-    newThread->context = main;
-    newThread->yielded = 0;
-    newThread->waiting_for = NULL;
-    dlist_push_right(doneQueue, newThread);
+    dccthread_create("main", func, param);
 
-    /****************************/
-    // Setando temporizador de sinal
-    tEvent.sigev_signo = SIGALRM;
+    /************ Setando temporizador de sinal ****************/
+    struct sigevent tEvent;
+    struct sigaction tAction;
+    struct itimerspec tInterval;
+    timer_t timerid;
+    
+    tEvent.sigev_signo = SIGRTMIN;
     tEvent.sigev_notify = SIGEV_SIGNAL;
     tAction.sa_handler = (void*)dccthread_yield;
     tAction.sa_flags = 0;       // Do nothing
@@ -102,18 +46,20 @@ void dccthread_init(void (*func)(int), int param) {
     tInterval.it_value.tv_sec = tInterval.it_interval.tv_sec = 0;
     tInterval.it_value.tv_nsec = tInterval.it_interval.tv_nsec = 10000000; // 10 ms
 
-    sigaction(SIGALRM, &tAction, NULL);
+    sigaction(SIGRTMIN, &tAction, NULL);
     timer_create(CLOCK_PROCESS_CPUTIME_ID, &tEvent, &timerid);
-    timer_settime(&timerid, 0, &tInterval, NULL);
-    sigemptyset(&mask);
-    sigaddset(&mask, SIGALRM);
+    timer_settime(timerid, 0, &tInterval, NULL);
 
-    /****************************/
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGRTMIN);
+    /**********************************************************/
+
     sigprocmask(SIG_BLOCK, &mask, NULL);
     while(dlist_empty(doneQueue) == 0) {
         dccthread_t *next_thread = dlist_get_index(doneQueue, 0);
 
-        if(next_thread->waiting_for != NULL) {
+        if(next_thread->sleeping || next_thread->waiting_for != NULL) {
+            dlist_pop_left(doneQueue);
             dlist_push_right(doneQueue, next_thread);
             continue;
         }
@@ -122,7 +68,7 @@ void dccthread_init(void (*func)(int), int param) {
 
         dlist_pop_left(doneQueue);
 
-        if(next_thread->yielded || next_thread->waiting_for != NULL) {
+        if(next_thread->yielded || next_thread->sleeping || next_thread->waiting_for != NULL) {
             next_thread->yielded = 0;
             dlist_push_right(doneQueue, next_thread);
         }
@@ -139,9 +85,10 @@ dccthread_t * dccthread_create(
                           void (*func)(int ), int param) {
 
     ucontext_t *newContext = malloc(sizeof(ucontext_t));
-
     getcontext(newContext);
+    
     sigprocmask(SIG_BLOCK, &mask, NULL);
+
     newContext->uc_link = &manager;
     newContext->uc_stack.ss_sp = malloc( THREAD_STACK_SIZE );
     newContext->uc_stack.ss_size = THREAD_STACK_SIZE;
@@ -152,16 +99,17 @@ dccthread_t * dccthread_create(
         return NULL;
     }
 
-    makecontext(newContext, (void (*)(void))func, 1, param);
-
     dccthread_t *newThread = malloc(sizeof(dccthread_t));
     strcpy(newThread->name, name);
     newThread->context = newContext;
     newThread->yielded = 0;
+    newThread->sleeping = 0;
     newThread->waiting_for = NULL;
     dlist_push_right(doneQueue, newThread);
 
+    makecontext(newContext, (void (*)(void))func, 1, param);
     sigprocmask(SIG_UNBLOCK, &mask, NULL);
+    
     return newThread;
 }
 
@@ -171,13 +119,11 @@ void dccthread_yield() {
     sigprocmask(SIG_BLOCK, &mask, NULL);
 
     dccthread_t *currThread = dccthread_self();
-    // printf("%s %d\n", currThread->name, currThread);
-
     currThread->yielded = 1;
+    
     swapcontext(currThread->context, &manager);
     sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
-
 
 /* `dccthread_exit` terminates the current thread, freeing all
  * associated resources. */
@@ -196,12 +142,15 @@ void dccthread_exit(void) {
         }
     }
     free(currThread->context->uc_stack.ss_sp);
+    
     sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 /* `dccthread_wait` blocks the current thread until thread `tid`
  * terminates. */
 void dccthread_wait(dccthread_t *tid) {
+    
+    sigprocmask(SIG_BLOCK, &mask, NULL);
 
     int index;
     for(index = 0; index < doneQueue->count; index++) {
@@ -215,12 +164,51 @@ void dccthread_wait(dccthread_t *tid) {
         currThread->waiting_for = tid;
         swapcontext(currThread->context, &manager);
     }
+    
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
+}
+
+void dccthread_wakeup_handler(int sig, siginfo_t *si, void *uc) {
+    sigprocmask(SIG_BLOCK, &mask, NULL);
+    int index;
+    for(index = 0; index < doneQueue->count; index++) {
+        dccthread_t *thread = dlist_get_index(doneQueue, index);
+        if(thread->context == uc) {
+            thread->sleeping = 0;
+            break;
+        }
+    }
+    sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 /* `dccthread_sleep` stops the current thread for the time period
  * specified in `ts`. */
 void dccthread_sleep(struct timespec ts) {
+    //sigprocmask(SIG_BLOCK, &mask, NULL);
 
+    //struct sigaction signal_action;
+    //struct sigevent signal_event;
+    //struct itimerspec interval_ts;
+    //timer_t sleep_timerid;
+
+    //dccthread_t *currThread = dccthread_self();
+    //currThread->sleeping = 1;
+    //
+    //signal_action.sa_flags = SA_SIGINFO;
+    //signal_action.sa_sigaction = dccthread_wakeup_handler;
+    //sigaction(SIGRTMIN+1, &signal_action, NULL);
+
+    //signal_event.sigev_notify = SIGEV_SIGNAL;
+    //signal_event.sigev_signo = SIGRTMIN+1;
+
+    //interval_ts.it_value = ts;
+    //
+    //timer_create(CLOCK_PROCESS_CPUTIME_ID, &signal_event, &sleep_timerid);
+    //timer_settime(sleep_timerid, 0, &interval_ts, NULL);
+    //
+    //swapcontext(currThread->context, &manager);
+    //
+    //sigprocmask(SIG_UNBLOCK, &mask, NULL);
 }
 
 /* `dccthread_self` returns the current thread's handle. */

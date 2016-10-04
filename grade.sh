@@ -38,11 +38,11 @@ if ! tests/test10.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
 if ! tests/test10.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
 if ! tests/test10.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
 
-# if ! tests/test11.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
-# if ! tests/test11.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
-#
-# if ! tests/test12.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
-# if ! tests/test12.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
+if ! tests/test11.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
+if ! tests/test11.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
+
+if ! tests/test12.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
+if ! tests/test12.sh ; then ecnt=$(( $ecnt + 1 )) ; fi
 
 
 echo "your code passes $(( $total - $ecnt )) of $total tests"
